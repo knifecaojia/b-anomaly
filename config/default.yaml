@@ -1,0 +1,16 @@
+device: auto
+slicer:
+  enabled: true
+  slice_size: 640
+  overlap: 0.25
+  min_area_ratio: 0.3
+  negative_sample_ratio: 0.2
+logging:
+  level: INFO
+  dir: logs
+  retention_days: 30
+api:
+  host: "0.0.0.0"
+  port: 8000
+  model_path: ""
+  conf_threshold: 0.25

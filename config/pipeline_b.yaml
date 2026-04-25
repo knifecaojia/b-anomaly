@@ -1,0 +1,32 @@
+anomalib:
+  backbone: "wide_resnet50_2"
+  layers:
+    - "layer2"
+    - "layer3"
+  coreset_sampling_ratio: 0.1
+  num_neighbors: 9
+  image_size: 256
+  anomaly_threshold: null
+  train_batch_size: 32
+  eval_batch_size: 32
+  num_workers: 0
+
+region_extractor:
+  threshold: null
+  min_area_ratio: 0.005
+  morph_kernel_size: 3
+  max_regions: 20
+  expand_ratio: 0.1
+
+classifier:
+  type: "yolo"
+  model_path: ""
+  conf_threshold: 0.25
+  expand_ratio: 0.2
+
+slicer:
+  enabled: true
+  slice_size: 640
+  overlap: 0.25
+  min_area_ratio: 0.3
+  negative_sample_ratio: 0.2

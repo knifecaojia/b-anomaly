@@ -1,0 +1,22 @@
+model: yolov8n.pt
+epochs: 100
+batch_size: 16
+img_size: 640
+lr0: 0.01
+lrf: 0.01
+patience: 50
+augmentation:
+  mosaic: 1.0
+  copy_paste: 0.3
+  fliplr: 0.5
+  flipud: 0.0
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+slicer:
+  enabled: true
+  slice_size: 640
+  overlap: 0.25
+  min_area_ratio: 0.3
+  negative_sample_ratio: 0.2
+output_dir: runs

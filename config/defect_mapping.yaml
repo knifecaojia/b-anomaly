@@ -1,0 +1,17 @@
+active_classes:
+  - name: "异物"
+    merge_from:
+      - "异物"
+  - name: "过切"
+    merge_from:
+      - "小NC过切"
+      - "过切"
+pending_classes:
+  - name: "破损"
+    merge_from:
+      - "破损"
+    condition: "需确认标注质量后启用"
+  - name: "包边卷边"
+    merge_from:
+      - "包边卷边"
+    condition: "仅1个标注，暂不可训练"
