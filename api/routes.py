@@ -12,17 +12,20 @@ from api.response_builder import build_error_response, build_response
 from api.schemas import DefectRequest, DefectResponse, HealthResponse, ModelInfoResponse
 from core.device import get_device_info
 from core.yolo_engine import PipelineA
+from pipeline import BasePipeline
 
 router = APIRouter()
 
-_pipeline: PipelineA | None = None
+_pipeline: BasePipeline | None = None
 _conf_threshold: float = 0.25
+_pipeline_type: str = "a"
 
 
-def set_pipeline(pipeline: PipelineA, conf_threshold: float = 0.25) -> None:
-    global _pipeline, _conf_threshold
+def set_pipeline(pipeline: BasePipeline, conf_threshold: float = 0.25, pipeline_type: str = "a") -> None:
+    global _pipeline, _conf_threshold, _pipeline_type
     _pipeline = pipeline
     _conf_threshold = conf_threshold
+    _pipeline_type = pipeline_type
 
 
 @router.post(
@@ -33,14 +36,24 @@ def set_pipeline(pipeline: PipelineA, conf_threshold: float = 0.25) -> None:
     description=(
         "接收一组图片文件名和目录路径，对每张图片执行缺陷检测，"
         "返回按文件和缺陷类型分组的结果。\n\n"
-        "**处理流程**: 接收请求 → 校验图片路径 → YOLO推理 → NMS去重 → 返回结果\n\n"
-        "**position 字段**: 从第一个文件名中自动提取（匹配 `_P00_` 格式），无需传入\n\n"
+        "**处理流程**: 接收请求 → 校验图片路径 → 推理 → 返回结果\n\n"
+        f"**当前模式**: Pipeline {_pipeline_type.upper()}\n\n"
         "**支持大图自动切片**: 当图片尺寸超过 2 倍切片尺寸时，"
         "自动切片推理后合并结果。"
     ),
     responses={
         200: {
             "description": "检测完成（包括模型未加载时的错误响应）",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": 200,
+                        "message": "success",
+                        "job_id": "JOB001",
+                        "defect_infos": [],
+                    }
+                }
+            },
         },
         422: {"description": "请求参数校验失败"},
     },
@@ -54,11 +67,24 @@ async def detect_defects(request: DefectRequest) -> DefectResponse:
         f"目录={request.relative_dir}"
     )
 
-    if _pipeline is None or not _pipeline._engine.is_loaded:
+    if _pipeline is None:
         logger.error(f"[请求] {request_id} | 模型未加载，无法处理请求")
         return build_error_response(
             500, "模型未加载",
-            request.job_id, request.sample_id, request.relative_dir,
+            request.job_id, request.sample_id, "", request.relative_dir,
+        )
+
+    engine_check = None
+    if isinstance(_pipeline, PipelineA):
+        engine_check = _pipeline._engine.is_loaded
+    else:
+        engine_check = _pipeline.is_loaded
+
+    if not engine_check:
+        logger.error(f"[请求] {request_id} | 模型未加载，无法处理请求")
+        return build_error_response(
+            500, "模型未加载",
+            request.job_id, request.sample_id, "", request.relative_dir,
         )
 
     file_results: Dict[str, list] = {}
@@ -92,14 +118,13 @@ async def detect_defects(request: DefectRequest) -> DefectResponse:
             logger.error(f"[推理] {request_id} | [{i}/{len(request.file_names)}] 推理失败: {e}")
             file_results[file_name] = []
 
-    first_file_name = request.file_names[0] if request.file_names else ""
     response = build_response(
         request_job_id=request.job_id,
         request_sample_id=request.sample_id,
         request_relative_dir=request.relative_dir,
         file_results=file_results,
         class_names=_pipeline.class_names,
-        first_file_name=first_file_name,
+        first_file_name=request.file_names[0] if request.file_names else "",
     )
 
     elapsed_ms = (time.perf_counter() - total_start) * 1000
@@ -123,16 +148,25 @@ async def detect_defects(request: DefectRequest) -> DefectResponse:
 async def health_check() -> HealthResponse:
     device_info = get_device_info()
     classes = _pipeline.class_names if _pipeline else []
+
     model_ver = ""
-    if _pipeline and _pipeline._engine._model_path:
+    if isinstance(_pipeline, PipelineA) and _pipeline._engine._model_path:
         model_ver = Path(_pipeline._engine._model_path).stem
+    elif _pipeline and hasattr(_pipeline, "_ckpt_path") and _pipeline._ckpt_path:
+        model_ver = Path(_pipeline._ckpt_path).stem
+
+    if isinstance(_pipeline, PipelineA):
+        loaded = _pipeline._engine.is_loaded
+    else:
+        loaded = _pipeline.is_loaded if _pipeline else False
 
     return HealthResponse(
-        status="ok" if _pipeline and _pipeline._engine.is_loaded else "no_model",
+        status="ok" if loaded else "no_model",
         model_version=model_ver,
         classes=classes,
         device=device_info.get("device", "unknown"),
         gpu_name=device_info.get("gpu_name", ""),
+        pipeline_type=_pipeline_type.upper(),
     )
 
 
@@ -151,9 +185,24 @@ async def model_info() -> ModelInfoResponse:
     if _pipeline is None:
         raise HTTPException(status_code=503, detail="模型未加载")
 
+    model_path = ""
+    slicer_enabled = True
+    slice_size = 640
+
+    if isinstance(_pipeline, PipelineA):
+        model_path = _pipeline._engine._model_path or ""
+        slicer_enabled = _pipeline._slicer_config.enabled
+        slice_size = _pipeline._slicer_config.slice_size
+    else:
+        if hasattr(_pipeline, "_ckpt_path") and _pipeline._ckpt_path:
+            model_path = _pipeline._ckpt_path
+        slicer_enabled = _pipeline._slicer_config.enabled
+        slice_size = _pipeline._slicer_config.slice_size
+
     return ModelInfoResponse(
-        model_path=_pipeline._engine._model_path or "",
+        model_path=model_path,
         classes=_pipeline.class_names,
-        slicer_enabled=_pipeline._slicer_config.enabled,
-        slice_size=_pipeline._slicer_config.slice_size,
+        slicer_enabled=slicer_enabled,
+        slice_size=slice_size,
+        pipeline_type=_pipeline_type.upper(),
     )

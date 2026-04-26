@@ -1,6 +1,8 @@
-# 爱泼— 工业产品缺陷检测系统
+# 爱泼 — 工业产品缺陷检测系统
 
-基于 YOLO 的工业产品表面缺陷检测系统。支持模型训练、单图/批量推理、RESTful API 服务。
+基于 YOLO 的工业产品表面缺陷检测系统。支持模型训练、单图/批量推理、RESTful API 服务、Docker 容器化部署。
+
+**项目地址**：[https://github.com/knifecaojia/b-anomaly](https://github.com/knifecaojia/b-anomaly)
 
 ## 检测类别
 
@@ -20,7 +22,7 @@
 ### 安装
 
 ```bash
-git clone <repo-url> && cd apple
+git clone https://github.com/knifecaojia/b-anomaly.git && cd b-anomaly
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 # source .venv/bin/activate   # Linux
@@ -423,7 +425,229 @@ python -m pytest tests/test_api.py -v
 
 ---
 
-## 四、其他工具
+## 四、Docker 容器化部署
+
+### 4.1 镜像信息
+
+| 项目       | 说明                                            |
+| ---------- | ----------------------------------------------- |
+| 基础镜像   | `pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime` |
+| CUDA 版本  | 12.6                                            |
+| 内嵌模型   | `yolov8n.pt`（COCO 预训练，80 类通用检测）       |
+| 容器内路径 | `/app/`（工作目录）                              |
+| 模型路径   | `/app/models/yolov8n.pt`                        |
+| 暴露端口   | 8000                                            |
+
+### 4.2 构建镜像
+
+```powershell
+cd f:\Bear\apple
+docker build -t b-anomaly:latest .
+```
+
+构建过程包括：拉取基础镜像 → 安装系统依赖 → 安装 Python 包 → 下载 yolov8n.pt 模型。首次构建约需 10-20 分钟。
+
+### 4.3 目录挂载说明
+
+容器是一个隔离环境，它看不到你宿主机上的文件。API 接口通过 `relative_dir` 参数来定位图片，这个路径是**容器内部的路径**，不是宿主机的路径。
+
+所以核心思路很简单：
+
+1. 容器启动时，用 `-v` 把宿主机的图片目录挂载到容器内的一个固定位置
+2. 调用 API 时，`relative_dir` 直接填这个固定位置就行
+
+**举个例子：**
+
+假设你的图片在宿主机的 `D:\production_images` 目录下，结构如下：
+
+```
+D:\production_images\
+├── JOB001\
+│   ├── P00_20260426_001.jpg
+│   └── P03_20260426_002.jpg
+└── JOB002\
+    ├── P00_20260426_003.jpg
+    └── P06_20260426_004.jpg
+```
+
+启动容器时，把这个目录挂载到容器的 `/data/images`：
+
+```powershell
+docker run -d --gpus all -p 8000:8000 `
+  -v D:\production_images:/data/images `
+  --name apple-api b-anomaly:latest
+```
+
+调用 API 时，`relative_dir` 就填容器内的路径 `/data/images/JOB001`：
+
+```json
+{
+  "job_id": "JOB001",
+  "sample_id": "S0001",
+  "file_names": ["P00_20260426_001.jpg", "P03_20260426_002.jpg"],
+  "relative_dir": "/data/images/JOB001"
+}
+```
+
+**多个目录的情况：**
+
+如果图片分散在不同位置，可以挂载多个目录：
+
+```powershell
+docker run -d --gpus all -p 8000:8000 `
+  -v D:\line_a_images:/data/line_a `
+  -v E:\line_b_images:/data/line_b `
+  -v f:\Bear\apple\config:/app/config `
+  --name apple-api b-anomaly:latest
+```
+
+对应的 API 调用：
+
+```json
+{
+  "job_id": "JOB001",
+  "sample_id": "S0001",
+  "file_names": ["P00_20260426_001.jpg"],
+  "relative_dir": "/data/line_a/JOB001"
+}
+```
+
+**开发/测试时使用项目自带的数据集：**
+
+```powershell
+docker run -d --gpus all -p 8000:8000 `
+  -v f:\Bear\apple\dataset:/app/dataset `
+  -v f:\Bear\apple\config:/app/config `
+  --name apple-api b-anomaly:latest
+```
+
+对应的 API 调用：
+
+```json
+{
+  "job_id": "bench-001",
+  "sample_id": "sample-001",
+  "file_names": ["slice_000001.jpg"],
+  "relative_dir": "/app/dataset/batch1_coco_yolo/val/images"
+}
+```
+
+**总结：**
+
+| 步骤 | 你做什么 |
+|------|---------|
+| 启动容器 | `-v 宿主机目录:容器内目录`，把图片目录挂进去 |
+| 调用 API | `relative_dir` 填**容器内目录**的路径 |
+| `file_names` | 只填文件名，不带路径 |
+
+### 4.4 使用自定义模型
+
+默认使用内嵌的 yolov8n.pt（COCO 80 类通用检测）。如果要使用自己训练的缺陷检测模型：
+
+```powershell
+docker run -d --gpus all -p 8000:8000 `
+  -v f:\Bear\apple\dataset:/app/dataset `
+  -v f:\Bear\apple\config:/app/config `
+  -v f:\Bear\apple\runs:/app/runs `
+  --name apple-api b-anomaly:latest `
+  python main.py serve --model /app/runs/detect/runs/train_20260425_070520/weights/best.pt --host 0.0.0.0 --port 8000
+```
+
+### 4.5 验证容器运行
+
+**方法一：查看容器日志**
+
+```powershell
+docker logs apple-api
+```
+
+正常输出应包含：
+- `使用 GPU: NVIDIA GeForce RTX 3080 (10.0 GB)`
+- `模型已加载: /app/models/yolov8n.pt`
+- `Uvicorn running on http://0.0.0.0:8000`
+
+**方法二：健康检查**
+
+```powershell
+python -c "import urllib.request,json; r=urllib.request.urlopen('http://localhost:8000/health'); print(json.dumps(json.loads(r.read()),indent=2,ensure_ascii=False))"
+```
+
+正常响应：
+```json
+{
+  "status": "ok",
+  "device": "cuda",
+  "gpu_name": "NVIDIA GeForce RTX 3080",
+  "pipeline_type": "A"
+}
+```
+
+**方法三：Swagger 交互式文档**
+
+浏览器打开 `http://localhost:8000/docs`，可以直接在页面上测试所有 API 接口：
+- 点击接口 → 点击 `Try it out` → 填写参数 → 点击 `Execute` → 查看响应
+
+**方法四：推理测试**
+
+```powershell
+python -c "
+import urllib.request, json
+payload = json.dumps({
+    'job_id': 'test-001',
+    'sample_id': 'sample-001',
+    'file_names': ['slice_000001.jpg'],
+    'relative_dir': '/app/dataset/batch1_coco_yolo/val/images'
+}).encode('utf-8')
+req = urllib.request.Request('http://localhost:8000/get_latest_defect_infos', data=payload, headers={'Content-Type': 'application/json'})
+resp = urllib.request.urlopen(req, timeout=120)
+result = json.loads(resp.read())
+print(f'status: {result[\"code\"]}')
+print(f'defect count: {sum(len(d[\"defect_infos\"]) for i in result[\"defect_infos\"] for d in i[\"defect_list\"])}')
+"
+```
+
+### 4.6 性能基准测试
+
+```powershell
+python bench_docker_api.py
+```
+
+对容器内的 API 发送 10 次推理请求，输出平均耗时、中位数、最快/最慢等统计信息。RTX 3080 + yolov8n 参考结果：单张切片图片平均推理耗时约 60ms。
+
+### 4.7 常用容器管理命令
+
+```powershell
+# 查看容器状态
+docker ps
+
+# 查看实时日志
+docker logs -f apple-api
+
+# 停止容器
+docker stop apple-api
+
+# 重新启动
+docker start apple-api
+
+# 删除容器
+docker rm -f apple-api
+
+# 进入容器调试
+docker exec -it apple-api bash
+```
+
+### 4.8 性能参考
+
+在 RTX 3080 (10GB) + CUDA 12.6 容器环境下的推理性能：
+
+| 场景                      | 耗时       |
+| ------------------------- | ---------- |
+| 单张切片图片（640×640）   | ~60 ms     |
+| 完整高分辨率图（5472×3648，约 77 片） | ~5 秒 |
+
+---
+
+## 五、其他工具
 
 ### 数据集浏览器
 
@@ -454,3 +678,4 @@ python main.py viewer --port 7860
 | 日志     | loguru                      | 按日轮转，带阶段标签          |
 | 可视化   | Gradio                      | 数据集浏览器                  |
 | 测试     | pytest + httpx              | API 端点测试                  |
+| 容器化   | Docker + CUDA 12.6          | GPU 直通，镜像内嵌模型        |

@@ -116,6 +116,7 @@ class HealthResponse(BaseModel):
     classes: List[str] = Field(default_factory=list, description="模型支持的缺陷类别列表")
     device: str = Field(default="", description="推理设备: cuda 或 cpu")
     gpu_name: str = Field(default="", description="GPU 名称（使用 GPU 时）")
+    pipeline_type: str = Field(default="A", description="当前 Pipeline 类型: A 或 B")
 
 
 class ModelInfoResponse(BaseModel):
@@ -123,3 +124,4 @@ class ModelInfoResponse(BaseModel):
     classes: List[str] = Field(default_factory=list, description="缺陷类别列表")
     slicer_enabled: bool = Field(default=True, description="是否启用切片推理")
     slice_size: int = Field(default=640, description="切片尺寸（像素）")
+    pipeline_type: str = Field(default="A", description="当前 Pipeline 类型: A 或 B")

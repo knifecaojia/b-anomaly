@@ -8,6 +8,7 @@ from loguru import logger
 
 def create_train_parser(subparsers) -> None:
     parser = subparsers.add_parser("train", help="启动模型训练")
+    parser.add_argument("--pipeline", type=str, default="a", choices=["a", "b"], help="Pipeline 类型: a(YOLO) 或 b(Anomalib PatchCore)")
     parser.add_argument("--dataset", type=str, required=True, help="COCO 数据集目录路径")
     parser.add_argument("--model", type=str, default="yolov8n.pt", help="基础模型")
     parser.add_argument("--epochs", type=int, default=100, help="训练轮数")
@@ -20,16 +21,27 @@ def create_train_parser(subparsers) -> None:
     parser.add_argument("--slice-size", type=int, default=640, help="切片大小")
     parser.add_argument("--overlap", type=float, default=0.25, help="切片重叠率")
     parser.add_argument("--no-slice", action="store_true", help="禁用切片预处理")
-    parser.add_argument("--config", type=str, default="config/pipeline_a.yaml", help="配置文件路径")
+    parser.add_argument("--config", type=str, default="", help="配置文件路径（留空则根据 pipeline 类型自动选择）")
+    parser.add_argument("--ok-dir", type=str, default="", help="Pipeline B: OK图目录路径")
+    parser.add_argument("--backbone", type=str, default="wide_resnet50_2", help="Pipeline B: PatchCore 骨干网络")
 
 
 def run_train(args: argparse.Namespace) -> None:
     from core.config import load_training_config
     from core.device import set_device
-    from core.yolo_engine import PipelineA
 
     set_device(args.device)
 
+    if args.pipeline.lower() == "b":
+        _run_train_pipeline_b(args)
+    else:
+        _run_train_pipeline_a(args)
+
+
+def _run_train_pipeline_a(args: argparse.Namespace) -> None:
+    from core.yolo_engine import PipelineA
+
+    config_path = args.config or "config/pipeline_a.yaml"
     overrides = {
         "model": args.model,
         "dataset": args.dataset,
@@ -41,7 +53,7 @@ def run_train(args: argparse.Namespace) -> None:
         "device": args.device,
         "output_dir": args.output_dir,
     }
-    config = load_training_config(args.config, overrides)
+    config = load_training_config(config_path, overrides)
 
     if args.no_slice:
         config.slicer.enabled = False
@@ -52,7 +64,45 @@ def run_train(args: argparse.Namespace) -> None:
     pipeline = PipelineA(slicer_config=config.slicer)
     pipeline.train(config)
 
-    logger.info("训练完成")
+    logger.info("Pipeline A 训练完成")
+
+
+def _run_train_pipeline_b(args: argparse.Namespace) -> None:
+    from core.config import load_pipeline_b_config
+    from pipeline.pipeline_b import PipelineB
+
+    config_path = args.config or "config/pipeline_b.yaml"
+    config = load_pipeline_b_config(config_path)
+
+    anomalib_data_dir = args.dataset
+    if anomalib_data_dir and Path(anomalib_data_dir).exists():
+        coco_dir = Path(anomalib_data_dir)
+        if (coco_dir / "annotations").exists() or (coco_dir / "train").exists():
+            from dataset.prepare_anomalib_data import prepare_dataset
+            ok_dir = args.ok_dir if args.ok_dir else None
+            anomalib_data_dir = prepare_dataset(
+                ok_dir=ok_dir,
+                coco_dir=str(coco_dir),
+                output_dir=str(coco_dir.parent / "anomalib_data"),
+            )
+            logger.info(f"Anomalib 数据已准备: {anomalib_data_dir}")
+
+    pipeline = PipelineB(anomalib_config=config.anomalib, slicer_config=config.slicer)
+
+    pipeline._engine.train(
+        data_dir=anomalib_data_dir,
+        output_dir=args.output_dir,
+        backbone=args.backbone or config.anomalib.backbone,
+        layers=config.anomalib.layers,
+        coreset_sampling_ratio=config.anomalib.coreset_sampling_ratio,
+        num_neighbors=config.anomalib.num_neighbors,
+        image_size=config.anomalib.image_size,
+        train_batch_size=config.anomalib.train_batch_size,
+        eval_batch_size=config.anomalib.eval_batch_size,
+        num_workers=config.anomalib.num_workers,
+    )
+
+    logger.info("Pipeline B 训练完成")
 
 
 def create_predict_parser(subparsers) -> None:

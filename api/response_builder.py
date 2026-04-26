@@ -67,6 +67,7 @@ def build_error_response(
     message: str,
     request_job_id: str = "",
     request_sample_id: str = "",
+    request_position: str = "",
     request_relative_dir: str = "",
 ) -> DefectResponse:
     timestamp = str(int(time.time() * 1000))
@@ -75,6 +76,7 @@ def build_error_response(
         message=message,
         job_id=request_job_id,
         sample_id=request_sample_id,
+        position=request_position,
         timestamp=timestamp,
         relative_dir=request_relative_dir,
     )

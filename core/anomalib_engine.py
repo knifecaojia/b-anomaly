@@ -33,16 +33,42 @@ class AnomalibEngine:
         eval_batch_size: int = 32,
         num_workers: int = 0,
         max_epochs: int = 1,
+        aug_enabled: bool = True,
+        aug_rotation_degrees: int = 25,
+        aug_crop_scale_min: float = 0.85,
+        aug_hflip_prob: float = 0.5,
+        aug_vflip_prob: float = 0.5,
     ) -> str:
         from anomalib.data import Folder
+        from anomalib.deploy import ExportType
         from anomalib.engine import Engine
         from anomalib.models import Patchcore
 
         if layers is None:
             layers = ["layer2", "layer3"]
 
+        train_augmentations = None
+        if aug_enabled:
+            from torchvision.transforms import v2
+
+            train_augmentations = v2.Compose([
+                v2.RandomRotation(degrees=aug_rotation_degrees),
+                v2.RandomResizedCrop(
+                    size=(image_size, image_size),
+                    scale=(aug_crop_scale_min, 1.0),
+                ),
+                v2.RandomHorizontalFlip(p=aug_hflip_prob),
+                v2.RandomVerticalFlip(p=aug_vflip_prob),
+            ])
+            logger.info(
+                f"训练增强已启用: 旋转±{aug_rotation_degrees}°, "
+                f"裁剪缩放[{aug_crop_scale_min}, 1.0], "
+                f"水平翻转{aug_hflip_prob:.0%}, 垂直翻转{aug_vflip_prob:.0%}"
+            )
+
         data_dir = Path(data_dir)
         datamodule = Folder(
+            name="apple_defects",
             root=str(data_dir),
             normal_dir="train/normal",
             abnormal_dir="test/abnormal",
@@ -50,7 +76,7 @@ class AnomalibEngine:
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             num_workers=num_workers,
-            image_size=(image_size, image_size),
+            train_augmentations=train_augmentations,
         )
 
         model = Patchcore(
@@ -58,6 +84,9 @@ class AnomalibEngine:
             layers=layers,
             coreset_sampling_ratio=coreset_sampling_ratio,
             num_neighbors=num_neighbors,
+            pre_processor=Patchcore.configure_pre_processor(
+                image_size=(image_size, image_size),
+            ),
         )
 
         engine = Engine(
@@ -73,43 +102,107 @@ class AnomalibEngine:
         best_path = engine.best_model_path
         if best_path:
             shutil.copy2(best_path, str(ckpt_path))
-            logger.info(f"模型已保存到: {ckpt_path}")
-        else:
-            logger.warning("未找到最佳模型路径，尝试使用引擎内部模型导出")
-            try:
-                export_path = Path(output_dir) / "patchcore.pt"
-                engine.export(
-                    model=model,
-                    export_type="torch",
-                    export_root=str(output_dir),
-                )
-                if export_path.exists():
-                    logger.info(f"模型已导出到: {export_path}")
-                    self._ckpt_path = str(export_path)
-                    return self._ckpt_path
-            except Exception:
-                pass
-            logger.error("模型保存失败")
+            logger.info(f"模型 checkpoint 已保存到: {ckpt_path}")
+
+        try:
+            engine.export(
+                model=model,
+                export_type=ExportType.TORCH,
+            )
+            export_dir = Path(output_dir) / "exported" / "torch"
+            pt_files = list(export_dir.glob("*.pt")) if export_dir.exists() else []
+            if pt_files:
+                final_pt = Path(output_dir) / "patchcore.pt"
+                shutil.copy2(str(pt_files[0]), str(final_pt))
+                logger.info(f"Torch 模型已导出到: {final_pt}")
+                self._ckpt_path = str(final_pt)
+            else:
+                logger.warning(f"导出目录中未找到 .pt 文件: {export_dir}")
+        except Exception as e:
+            logger.warning(f"Torch 导出失败: {e}")
+
+        if not self._ckpt_path and ckpt_path.exists():
+            self._ckpt_path = str(ckpt_path)
 
         self._model = model
         self._engine = engine
-        self._ckpt_path = str(ckpt_path)
-        return self._ckpt_path
+        return self._ckpt_path or ""
 
-    def load_model(self, ckpt_path: str) -> None:
+    def load_model(self, model_path: str) -> None:
+        path = Path(model_path)
+
+        if path.suffix == ".pt":
+            self._load_torch_inferencer(str(path))
+        elif path.suffix == ".ckpt":
+            self._load_from_checkpoint(str(path))
+        elif path.is_dir():
+            pt_files = list(path.glob("*.pt"))
+            ckpt_files = list(path.glob("*.ckpt"))
+            if pt_files:
+                self._load_torch_inferencer(str(pt_files[0]))
+            elif ckpt_files:
+                self._load_from_checkpoint(str(ckpt_files[0]))
+            else:
+                raise FileNotFoundError(f"目录中未找到模型文件: {model_path}")
+        else:
+            pt_path = path.with_suffix(".pt")
+            if pt_path.exists():
+                self._load_torch_inferencer(str(pt_path))
+            else:
+                raise FileNotFoundError(f"模型文件不存在: {model_path}")
+
+        self._ckpt_path = str(path)
+        logger.info(f"Anomalib 模型已加载: {path}")
+
+    def _load_torch_inferencer(self, pt_path: str) -> None:
         from anomalib.deploy import TorchInferencer
 
-        self._inferencer = TorchInferencer(path=ckpt_path)
-        self._ckpt_path = ckpt_path
-        logger.info(f"Anomalib 模型已加载: {ckpt_path}")
+        self._inferencer = TorchInferencer(path=pt_path)
+
+    def _load_from_checkpoint(self, ckpt_path: str) -> None:
+        import torch
+        from anomalib.models import Patchcore
+
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+        hyper = ckpt.get("hyper_parameters", {})
+        backbone = hyper.get("backbone", "wide_resnet50_2")
+        layers = hyper.get("layers", ("layer2", "layer3"))
+        coreset_ratio = hyper.get("coreset_sampling_ratio", 0.1)
+        num_neighbors = hyper.get("num_neighbors", 9)
+
+        model = Patchcore(
+            backbone=backbone,
+            layers=list(layers),
+            coreset_sampling_ratio=coreset_ratio,
+            num_neighbors=num_neighbors,
+        )
+
+        state_dict = ckpt.get("state_dict", {})
+        filtered = {k: v for k, v in state_dict.items() if not k.startswith("pre_processor.") and not k.startswith("post_processor.")}
+        model.load_state_dict(filtered, strict=False)
+        model.eval()
+
+        if hasattr(model, "memory_bank") and "model" in ckpt:
+            sub_model = ckpt["model"]
+            if hasattr(sub_model, "memory_bank"):
+                model.model.memory_bank = sub_model.memory_bank
+
+        self._model = model
 
     def predict_single(
         self,
         image: np.ndarray,
     ) -> Tuple[np.ndarray, float]:
-        if self._inferencer is None:
-            raise RuntimeError("模型未加载，请先调用 load_model()")
+        if self._inferencer is not None:
+            return self._predict_via_inferencer(image)
+        elif self._model is not None:
+            return self._predict_via_model(image)
+        raise RuntimeError("模型未加载，请先调用 load_model()")
 
+    def _predict_via_inferencer(
+        self, image: np.ndarray
+    ) -> Tuple[np.ndarray, float]:
         result = self._inferencer.predict(image=image)
 
         anomaly_map = result.anomaly_map
@@ -126,6 +219,36 @@ class AnomalibEngine:
         pred_score = float(pred_score)
 
         return anomaly_map, pred_score
+
+    def _predict_via_model(
+        self, image: np.ndarray
+    ) -> Tuple[np.ndarray, float]:
+        import torch
+        from torchvision import transforms
+
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize((256, 256)),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        tensor = transform(rgb).unsqueeze(0)
+
+        self._model.eval()
+        with torch.no_grad():
+            output = self._model(tensor)
+
+        if hasattr(output, "anomaly_map"):
+            amap = output.anomaly_map
+            if hasattr(amap, "cpu"):
+                amap = amap.cpu().numpy()
+            score = float(output.pred_score) if hasattr(output, "pred_score") else float(amap.max())
+            if isinstance(amap, np.ndarray) and amap.ndim >= 3:
+                amap = amap.squeeze()
+            return amap, score
+
+        return np.zeros((256, 256), dtype=np.float32), 0.0
 
     def predict_batch(
         self,

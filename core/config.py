@@ -140,6 +140,11 @@ class AnomalibConfig(BaseModel):
     train_batch_size: int = Field(default=32, ge=1)
     eval_batch_size: int = Field(default=32, ge=1)
     num_workers: int = Field(default=0, ge=0)
+    aug_enabled: bool = True
+    aug_rotation_degrees: int = Field(default=25, ge=0, le=90)
+    aug_crop_scale_min: float = Field(default=0.85, ge=0.5, le=1.0)
+    aug_hflip_prob: float = Field(default=0.5, ge=0.0, le=1.0)
+    aug_vflip_prob: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class RegionExtractorConfig(BaseModel):

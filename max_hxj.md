@@ -109,6 +109,44 @@ python main.py viewer
 
 每张高分辨率图切成约 77 个小块，其中只有 3-5 个含缺陷。如果不加负样本（无缺陷的背景块），模型会倾向于把所有东西都判为缺陷。按正负比 1:3~1:5 采样背景块，能有效降低误检率。
 
+### 5. Docker 镜像选择：runtime 而非 devel
+
+PyTorch 官方提供两种镜像：`devel`（包含完整编译工具链，约 7-8GB）和 `runtime`（只含运行时，约 3-4GB）。对于推理部署场景，runtime 就够了。devel 镜像体积太大，下载过程中 Docker 引擎容易超时崩溃。
+
+关键经验：如果依赖包安装时需要编译（比如某些 C 扩展），在 runtime 镜像基础上通过 `apt-get install gcc g++` 补装编译器即可，没必要用整个 devel 镜像。
+
+### 6. 容器化部署时目录挂载是刚需
+
+API 的核心接口接收 `relative_dir` 参数来读取图片。如果图片目录没有挂载到容器内，API 就找不到文件。所以 `docker run` 时必须用 `-v` 把本地的 dataset 目录挂载进去。
+
+### 7. 代码中隐藏的 bug 会在容器测试时暴露
+
+在容器测试推理接口时，发现 `routes.py` 中引用了 `request.position`，但 `DefectRequest` 模型根本没有 `position` 字段。这个 bug 之前没被触发，可能是因为之前测试走的路径不经过这段代码。教训：**每个分支都要测试到，尤其是错误处理分支**。
+
+## Docker 部署
+
+项目支持 Docker 容器化部署，以下是关键信息：
+
+**Dockerfile**：基于 `pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime`，内含 yolov8n.pt 模型。
+
+**构建镜像**：
+```powershell
+docker build -t b-anomaly:latest .
+```
+
+**运行容器**：
+```powershell
+docker run -d --gpus all -p 8000:8000 `
+  -v f:\Bear\apple\dataset:/app/dataset `
+  -v f:\Bear\apple\config:/app/config `
+  --name apple-api b-anomaly:latest
+```
+
+**测试验证**：
+- 健康检查：`GET http://localhost:8000/health`（确认 device=cuda）
+- 模型信息：`GET http://localhost:8000/model/info`
+- 推理测试：`POST http://localhost:8000/get_latest_defect_infos`
+
 ## 技术栈
 
 | 用途 | 技术 |
@@ -120,3 +158,4 @@ python main.py viewer
 | 配置校验 | Pydantic |
 | 日志 | loguru |
 | 数据标注 | supervision |
+| 容器化 | Docker (CUDA 12.6 + PyTorch 2.6.0) |

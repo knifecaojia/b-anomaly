@@ -10,6 +10,11 @@ anomalib:
   train_batch_size: 32
   eval_batch_size: 32
   num_workers: 0
+  aug_enabled: true
+  aug_rotation_degrees: 25
+  aug_crop_scale_min: 0.85
+  aug_hflip_prob: 0.5
+  aug_vflip_prob: 0.5
 
 region_extractor:
   threshold: null

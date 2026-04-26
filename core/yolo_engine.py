@@ -302,10 +302,10 @@ class PipelineA(BasePipeline):
                 for j, detections in enumerate(batch_results):
                     for det in detections:
                         local_box = np.array(
-                            [[det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2]]
-                        )
-                        global_box = map_detections_to_global(local_box[0], coords[j])
-                        all_boxes.append(global_box)
+                            [det.bbox.x1, det.bbox.y1, det.bbox.x2, det.bbox.y2]
+                        ).reshape(1, 4)
+                        global_box = map_detections_to_global(local_box, coords[j])
+                        all_boxes.append(global_box[0])
                         all_scores.append(det.confidence)
                         cls_id = 0
                         for ci, cn in enumerate(self._engine.class_names):
