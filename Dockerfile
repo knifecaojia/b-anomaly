@@ -20,10 +20,11 @@ COPY cli/ cli/
 COPY config/ config/
 COPY core/ core/
 COPY pipeline/ pipeline/
+COPY viewers/ viewers/
 COPY main.py .
 
-COPY runs/rfdetr_crop2_medium_sliced/rfdetr_medium_converted.pth /app/models/rfdetr_medium.pth
+COPY models/pipeline_c_rfdetr_medium_best_ema.pth /app/models/pipeline_c_rfdetr_medium_best_ema.pth
 
 EXPOSE 8000
 
-CMD ["python", "main.py", "serve", "--model", "/app/models/rfdetr_medium.pth", "--host", "0.0.0.0", "--port", "8000", "--pipeline", "c", "--variant", "m"]
+CMD ["python", "main.py", "serve", "--pipeline", "c", "--variant", "m", "--model", "/app/models/pipeline_c_rfdetr_medium_best_ema.pth", "--host", "0.0.0.0", "--port", "8000"]

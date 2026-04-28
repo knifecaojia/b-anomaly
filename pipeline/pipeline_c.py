@@ -72,7 +72,7 @@ class PipelineC(BasePipeline):
         if not image_path.exists():
             raise FileNotFoundError(f"找不到图片文件: {image_path}")
 
-        image = cv2.imread(str(image_path))
+        image = cv2.imdecode(np.fromfile(str(image_path), dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f"无法读取图片文件: {image_path}")
 
@@ -122,7 +122,7 @@ class PipelineC(BasePipeline):
         # 归一化 (PipelineA/B返回normalized的bbox)
         # 但是PipelineC的predict引擎返回的可能已经是原图坐标了。
         # 等等，如果需要normalized的bbox，需要在predict里转换。
-        image = cv2.imread(str(image_path))
+        image = cv2.imdecode(np.fromfile(str(image_path), dtype=np.uint8), cv2.IMREAD_COLOR)
         img_h, img_w = image.shape[:2]
         normalized_dets = [d.to_normalized(img_w, img_h) for d in det_results]
         

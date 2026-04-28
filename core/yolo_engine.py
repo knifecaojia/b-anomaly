@@ -272,7 +272,7 @@ class PipelineA(BasePipeline):
         tracker = TimingTracker()
         tracker.start_step("加载图片")
 
-        image = cv2.imread(image_path)
+        image = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"无法读取图片: {image_path}")
         img_h, img_w = image.shape[:2]

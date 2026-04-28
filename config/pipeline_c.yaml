@@ -1,7 +1,7 @@
 training:
   # 支持的模型变体: n (Nano), s (Small), m (Medium), l (Large)
-  model_variant: "s"
-  pretrain_weights: ""
+  model_variant: "m"
+  pretrain_weights: "models/pipeline_c_rfdetr_medium_best_ema.pth"
   resolution: 512
   epochs: 30
   batch_size: 4
