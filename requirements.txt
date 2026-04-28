@@ -17,3 +17,6 @@ lightning>=2.1.0
 opencv-python>=4.8.0
 scikit-learn>=1.3.0
 scipy>=1.11.0
+
+# Pipeline C: RF-DETR
+rfdetr[train,loggers]>=1.6.0

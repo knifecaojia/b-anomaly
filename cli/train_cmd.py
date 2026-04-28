@@ -8,9 +8,10 @@ from loguru import logger
 
 def create_train_parser(subparsers) -> None:
     parser = subparsers.add_parser("train", help="启动模型训练")
-    parser.add_argument("--pipeline", type=str, default="a", choices=["a", "b"], help="Pipeline 类型: a(YOLO) 或 b(Anomalib PatchCore)")
-    parser.add_argument("--dataset", type=str, required=True, help="COCO 数据集目录路径")
-    parser.add_argument("--model", type=str, default="yolov8n.pt", help="基础模型")
+    parser.add_argument("--pipeline", type=str, default="a", choices=["a", "b", "c"], help="Pipeline 类型: a(YOLO) 或 b(Anomalib PatchCore) 或 c(RF-DETR)")
+    parser.add_argument("--dataset", type=str, required=True, help="数据集目录路径 (COCO格式)")
+    parser.add_argument("--model", type=str, default="yolov8n.pt", help="Pipeline A 基础模型")
+    parser.add_argument("--variant", type=str, default="s", choices=["n", "s", "m", "l"], help="Pipeline C 模型变体")
     parser.add_argument("--epochs", type=int, default=100, help="训练轮数")
     parser.add_argument("--batch-size", type=int, default=16, help="批量大小")
     parser.add_argument("--img-size", type=int, default=640, help="输入图片尺寸")
@@ -34,11 +35,14 @@ def run_train(args: argparse.Namespace) -> None:
 
     if args.pipeline.lower() == "b":
         _run_train_pipeline_b(args)
+    elif args.pipeline.lower() == "c":
+        _run_train_pipeline_c(args)
     else:
         _run_train_pipeline_a(args)
 
 
 def _run_train_pipeline_a(args: argparse.Namespace) -> None:
+    from core.config import load_training_config
     from core.yolo_engine import PipelineA
 
     config_path = args.config or "config/pipeline_a.yaml"
@@ -105,8 +109,53 @@ def _run_train_pipeline_b(args: argparse.Namespace) -> None:
     logger.info("Pipeline B 训练完成")
 
 
+def _run_train_pipeline_c(args: argparse.Namespace) -> None:
+    from core.config import load_pipeline_c_config
+    from pipeline.pipeline_c import PipelineC
+
+    config_path = args.config or "config/pipeline_c.yaml"
+    overrides = {
+        "dataset": args.dataset,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "resolution": args.img_size,
+        "device": args.device,
+        "output_dir": args.output_dir,
+        "model_variant": args.variant,
+    }
+    
+    # 构建针对 training 嵌套层级的 override
+    training_overrides = {k: v for k, v in overrides.items() if v is not None}
+    
+    config = load_pipeline_c_config(config_path)
+    
+    for k, v in training_overrides.items():
+        setattr(config.training, k, v)
+
+    if args.no_slice:
+        config.slicer.enabled = False
+    else:
+        config.slicer.slice_size = args.slice_size
+        config.slicer.overlap = args.overlap
+
+    pipeline = PipelineC(config=config)
+    
+    logger.info("=" * 50)
+    logger.info("开始 Pipeline C (RF-DETR) 训练")
+    logger.info(f"模型变体: {config.training.model_variant}")
+    logger.info(f"数据集: {config.training.dataset}")
+    logger.info(f"切片启用: {config.slicer.enabled}")
+    logger.info("=" * 50)
+    
+    pipeline.engine.train(dataset_dir=config.training.dataset)
+
+    logger.info("Pipeline C 训练完成")
+
+
 def create_predict_parser(subparsers) -> None:
     parser = subparsers.add_parser("predict", help="运行模型推理")
+    parser.add_argument("--pipeline", type=str, default="a", choices=["a", "b", "c"], help="Pipeline 类型")
+    parser.add_argument("--variant", type=str, default="s", choices=["n", "s", "m", "l"], help="Pipeline C 模型变体")
     parser.add_argument("--model", type=str, required=True, help="模型权重路径")
     parser.add_argument("--source", type=str, required=True, help="图片路径或目录")
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值")
@@ -117,9 +166,10 @@ def create_predict_parser(subparsers) -> None:
 
 
 def run_predict(args: argparse.Namespace) -> None:
-    from core.config import SlicerConfig
+    from core.config import SlicerConfig, load_pipeline_c_config
     from core.device import set_device
     from core.yolo_engine import PipelineA
+    from pipeline.pipeline_c import PipelineC
 
     set_device(args.device)
 
@@ -131,8 +181,19 @@ def run_predict(args: argparse.Namespace) -> None:
             overlap=args.overlap,
         )
 
-    pipeline = PipelineA(slicer_config=slicer_config)
-    pipeline.load_model(args.model)
+    if args.pipeline.lower() == "c":
+        config = load_pipeline_c_config("config/pipeline_c.yaml")
+        if slicer_config:
+            config.slicer = slicer_config
+        else:
+            config.slicer.enabled = False
+        config.training.pretrain_weights = args.model
+        config.training.model_variant = args.variant
+        pipeline = PipelineC(config=config)
+        pipeline.initialize()
+    else:
+        pipeline = PipelineA(slicer_config=slicer_config)
+        pipeline.load_model(args.model)
 
     source = Path(args.source)
     if source.is_dir():
@@ -146,8 +207,11 @@ def run_predict(args: argparse.Namespace) -> None:
 
     for img_path in images:
         result = pipeline.predict(str(img_path), args.conf)
+        
+        timing_str = " -> ".join(f"{k}={v:.1f}ms" for k, v in result.timing_ms.items()) if result.timing_ms else "未知"
+            
         print(f"\n图片: {img_path.name}")
-        print(f"  耗时: {result.timing_ms}")
+        print(f"  耗时: {timing_str}")
         if result.detections:
             for det in result.detections:
                 print(

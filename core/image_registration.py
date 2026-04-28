@@ -70,6 +70,7 @@ class ImageRegistration:
         self,
         image: np.ndarray,
         warp_mode: int = cv2.MOTION_AFFINE,
+        partial_affine: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray, float]:
         if self._template is None:
             raise RuntimeError("模板未设置，请先调用 set_template()")
@@ -92,9 +93,15 @@ class ImageRegistration:
             [self._template_kp[m.trainIdx].pt for m in good_matches]
         ).reshape(-1, 1, 2)
 
-        matrix, inliers = cv2.estimateAffine2D(
-            src_pts, dst_pts, None, cv2.RANSAC, ransacReprojThreshold=3.0
-        )
+        if partial_affine:
+            # Similarity transform: rotation + uniform scale + translation only
+            matrix, inliers = cv2.estimateAffinePartial2D(
+                src_pts, dst_pts, None, cv2.RANSAC, ransacReprojThreshold=3.0
+            )
+        else:
+            matrix, inliers = cv2.estimateAffine2D(
+                src_pts, dst_pts, None, cv2.RANSAC, ransacReprojThreshold=3.0
+            )
 
         if matrix is None:
             logger.warning("仿射矩阵估计失败, 返回原图")
@@ -105,7 +112,7 @@ class ImageRegistration:
 
         h, w = self._template_gray.shape[:2]
         aligned = cv2.warpAffine(
-            image, matrix, (w, h), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP
+            image, matrix, (w, h), flags=cv2.INTER_LINEAR
         )
 
         return aligned, matrix, match_ratio

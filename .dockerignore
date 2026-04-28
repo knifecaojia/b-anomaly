@@ -1,0 +1,14 @@
+.venv/
+.git/
+.trae/
+__pycache__/
+*.pyc
+dataset/
+docs/
+viewers/
+runs/mlflow/
+runs/anomalib_*/
+runs/efficientad_*/
+step_*.py
+*.md
+.gradio/

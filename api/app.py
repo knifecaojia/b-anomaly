@@ -43,6 +43,7 @@ def create_app(
     pipeline_type: str = "a",
     anomalib_model_path: str = "",
     classifier_model_path: str = "",
+    rfdetr_model_variant: str = "s",
 ) -> FastAPI:
     logger.info(f"[准备] 初始化设备: {device}")
     set_device(device)
@@ -64,6 +65,18 @@ def create_app(
             slicer_config=slicer_config,
         )
         logger.info(f"[准备] Pipeline B 模式 | 异常检测: {anomalib_model_path} | 分类器: {classifier_model_path or '无'}")
+    elif pipeline_type.lower() == "c":
+        from core.config import load_pipeline_c_config
+        from pipeline.pipeline_c import PipelineC
+        config = load_pipeline_c_config("config/pipeline_c.yaml")
+        if slicer_config:
+            config.slicer = slicer_config
+        else:
+            config.slicer.enabled = False
+        config.training.model_variant = rfdetr_model_variant
+        config.training.pretrain_weights = model_path
+        pipeline = PipelineC(config=config)
+        logger.info(f"[准备] Pipeline C 模式 | RF-DETR ({rfdetr_model_variant}) | 权重: {model_path}")
     else:
         pipeline = PipelineA(slicer_config=slicer_config)
 
@@ -72,6 +85,9 @@ def create_app(
         if pipeline_type.lower() == "a":
             logger.info(f"[准备] 开始加载模型: {Path(model_path)}")
             pipeline.load_model(model_path)
+        elif pipeline_type.lower() == "c":
+            logger.info(f"[准备] 开始加载 Pipeline C 模型: {Path(model_path)}")
+            pipeline.initialize()
         set_pipeline(pipeline, conf_threshold, pipeline_type=pipeline_type)
         logger.info(
             f"[准备] 模型就绪 | Pipeline {pipeline_type.upper()} | 类别: {pipeline.class_names} | 置信度阈值: {conf_threshold}"
@@ -83,6 +99,8 @@ def create_app(
         "基于 YOLO 的工业产品缺陷检测服务"
         if pipeline_type.lower() == "a"
         else "基于 Anomalib PatchCore 异常检测 + YOLO 分类的工业缺陷检测服务"
+        if pipeline_type.lower() == "b"
+        else "基于 RF-DETR 端到端的工业缺陷检测服务"
     )
 
     tags_metadata = [

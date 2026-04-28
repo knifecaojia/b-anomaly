@@ -24,6 +24,7 @@ class AnomalibEngine:
         self,
         data_dir: str,
         output_dir: str = "runs/anomalib",
+        algorithm: str = "patchcore",  # patchcore or efficient_ad
         backbone: str = "wide_resnet50_2",
         layers: Optional[List[str]] = None,
         coreset_sampling_ratio: float = 0.1,
@@ -42,16 +43,17 @@ class AnomalibEngine:
         from anomalib.data import Folder
         from anomalib.deploy import ExportType
         from anomalib.engine import Engine
-        from anomalib.models import Patchcore
+        from anomalib.models import Patchcore, EfficientAd
+        import torch
 
         if layers is None:
             layers = ["layer2", "layer3"]
 
-        train_augmentations = None
+        from torchvision.transforms import v2
+        
         if aug_enabled:
-            from torchvision.transforms import v2
-
             train_augmentations = v2.Compose([
+                v2.Resize((image_size, image_size)),
                 v2.RandomRotation(degrees=aug_rotation_degrees),
                 v2.RandomResizedCrop(
                     size=(image_size, image_size),
@@ -59,12 +61,29 @@ class AnomalibEngine:
                 ),
                 v2.RandomHorizontalFlip(p=aug_hflip_prob),
                 v2.RandomVerticalFlip(p=aug_vflip_prob),
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
             logger.info(
                 f"训练增强已启用: 旋转±{aug_rotation_degrees}°, "
                 f"裁剪缩放[{aug_crop_scale_min}, 1.0], "
                 f"水平翻转{aug_hflip_prob:.0%}, 垂直翻转{aug_vflip_prob:.0%}"
             )
+        else:
+            train_augmentations = v2.Compose([
+                v2.Resize((image_size, image_size)),
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            
+        eval_augmentations = v2.Compose([
+            v2.Resize((image_size, image_size)),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
 
         data_dir = Path(data_dir)
         datamodule = Folder(
@@ -77,17 +96,24 @@ class AnomalibEngine:
             eval_batch_size=eval_batch_size,
             num_workers=num_workers,
             train_augmentations=train_augmentations,
+            val_augmentations=eval_augmentations,
+            test_augmentations=eval_augmentations,
         )
 
-        model = Patchcore(
-            backbone=backbone,
-            layers=layers,
-            coreset_sampling_ratio=coreset_sampling_ratio,
-            num_neighbors=num_neighbors,
-            pre_processor=Patchcore.configure_pre_processor(
-                image_size=(image_size, image_size),
-            ),
-        )
+        if algorithm == "efficient_ad":
+            model = EfficientAd(
+                model_size="small",
+            )
+        else:
+            model = Patchcore(
+                backbone=backbone,
+                layers=layers,
+                coreset_sampling_ratio=coreset_sampling_ratio,
+                num_neighbors=num_neighbors,
+                pre_processor=Patchcore.configure_pre_processor(
+                    image_size=(image_size, image_size),
+                ),
+            )
 
         engine = Engine(
             default_root_dir=output_dir,
@@ -164,24 +190,35 @@ class AnomalibEngine:
         from anomalib.models import Patchcore
 
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-
+        
         hyper = ckpt.get("hyper_parameters", {})
-        backbone = hyper.get("backbone", "wide_resnet50_2")
-        layers = hyper.get("layers", ("layer2", "layer3"))
-        coreset_ratio = hyper.get("coreset_sampling_ratio", 0.1)
-        num_neighbors = hyper.get("num_neighbors", 9)
-
-        model = Patchcore(
-            backbone=backbone,
-            layers=list(layers),
-            coreset_sampling_ratio=coreset_ratio,
-            num_neighbors=num_neighbors,
-        )
+        
+        # Determine algorithm from checkpoint
+        if any("teacher" in k for k in ckpt.get("state_dict", {}).keys()):
+            from anomalib.models import EfficientAd
+            model = EfficientAd(model_size="small")
+        else:
+            from anomalib.models import Patchcore
+            backbone = hyper.get("backbone", "wide_resnet50_2")
+            layers = hyper.get("layers", ("layer2", "layer3"))
+            coreset_ratio = hyper.get("coreset_sampling_ratio", 0.1)
+            num_neighbors = hyper.get("num_neighbors", 9)
+    
+            model = Patchcore(
+                backbone=backbone,
+                layers=list(layers),
+                coreset_sampling_ratio=coreset_ratio,
+                num_neighbors=num_neighbors,
+            )
 
         state_dict = ckpt.get("state_dict", {})
         filtered = {k: v for k, v in state_dict.items() if not k.startswith("pre_processor.") and not k.startswith("post_processor.")}
         model.load_state_dict(filtered, strict=False)
         model.eval()
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(self.device)
+        self._model = model
 
         if hasattr(model, "memory_bank") and "model" in ckpt:
             sub_model = ckpt["model"]
@@ -226,15 +263,28 @@ class AnomalibEngine:
         import torch
         from torchvision import transforms
 
+        # Try to infer image_size from the model's pre_processor or fallback to 256
+        img_size = (256, 256)
+        if hasattr(self._model, "pre_processor") and getattr(self._model.pre_processor, "transform", None):
+            for t in self._model.pre_processor.transform.transforms:
+                if isinstance(t, transforms.Resize):
+                    img_size = t.size
+                    break
+        elif hasattr(self._model, "image_size"):
+            if isinstance(self._model.image_size, (tuple, list)):
+                img_size = self._model.image_size
+            else:
+                img_size = (self._model.image_size, self._model.image_size)
+
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Resize((256, 256)),
+            transforms.Resize(img_size),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        tensor = transform(rgb).unsqueeze(0)
-
+        tensor = transform(rgb).unsqueeze(0).to(self.device)
+        
         self._model.eval()
         with torch.no_grad():
             output = self._model(tensor)

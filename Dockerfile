@@ -22,8 +22,8 @@ COPY core/ core/
 COPY pipeline/ pipeline/
 COPY main.py .
 
-COPY models/defect_best.pt /app/models/defect_best.pt
+COPY runs/rfdetr_crop2_medium_sliced/rfdetr_medium_converted.pth /app/models/rfdetr_medium.pth
 
 EXPOSE 8000
 
-CMD ["python", "main.py", "serve", "--model", "/app/models/defect_best.pt", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "main.py", "serve", "--model", "/app/models/rfdetr_medium.pth", "--host", "0.0.0.0", "--port", "8000", "--pipeline", "c", "--variant", "m"]

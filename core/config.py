@@ -179,3 +179,60 @@ def load_pipeline_b_config(
             if v is not None:
                 data[k] = v
     return PipelineBConfig(**data)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline C — RF-DETR 目标检测管道配置
+# ---------------------------------------------------------------------------
+
+class RFDETRAugmentationConfig(BaseModel):
+    """RF-DETR 数据增强配置"""
+    enabled: bool = True
+    preset: str = "AUG_INDUSTRIAL"
+    custom: dict = {}
+
+
+class RFDETRNMSConfig(BaseModel):
+    """RF-DETR NMS 后处理配置"""
+    enabled: bool = True
+    iou_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class RFDETRTrainConfig(BaseModel):
+    """RF-DETR 训练超参数配置"""
+    model_variant: str = Field(default="s", pattern="^(n|s|m|l)$")
+    pretrain_weights: str = ""
+    resolution: int = Field(default=512, ge=128)
+    epochs: int = Field(default=10, ge=1)
+    batch_size: int = Field(default=4, ge=1)
+    grad_accum_steps: int = Field(default=4, ge=1)
+    lr: float = Field(default=1e-4, gt=0)
+    lr_encoder: float = Field(default=1e-5, gt=0)
+    weight_decay: float = Field(default=1e-4, ge=0)
+    use_ema: bool = True
+    early_stopping: bool = False
+    early_stopping_patience: int = Field(default=15, ge=1)
+    gradient_checkpointing: bool = False
+    dataset: str = ""
+    device: str = "auto"
+    output_dir: str = "runs"
+
+
+class PipelineCConfig(BaseModel):
+    """Pipeline C 完整配置"""
+    training: RFDETRTrainConfig = RFDETRTrainConfig()
+    slicer: SlicerConfig = SlicerConfig()
+    nms: RFDETRNMSConfig = RFDETRNMSConfig()
+    augmentation: RFDETRAugmentationConfig = RFDETRAugmentationConfig()
+
+
+def load_pipeline_c_config(
+    path: str | Path = "config/pipeline_c.yaml",
+    overrides: Optional[dict] = None,
+) -> PipelineCConfig:
+    data = load_yaml(path)
+    if overrides:
+        for k, v in overrides.items():
+            if v is not None:
+                data[k] = v
+    return PipelineCConfig(**data)

@@ -11,7 +11,8 @@ def create_serve_parser(subparsers) -> None:
     parser.add_argument("--conf", type=float, default=0.25, help="默认置信度阈值")
     parser.add_argument("--device", type=str, default="auto", help="设备")
     parser.add_argument("--no-slice", action="store_true", help="禁用切片推理")
-    parser.add_argument("--pipeline", type=str, default="a", choices=["a", "b"], help="Pipeline 类型: a(YOLO) 或 b(Anomalib)")
+    parser.add_argument("--pipeline", type=str, default="a", choices=["a", "b", "c"], help="Pipeline 类型: a(YOLO) 或 b(Anomalib) 或 c(RF-DETR)")
+    parser.add_argument("--variant", type=str, default="s", choices=["n", "s", "m", "l"], help="Pipeline C: RF-DETR 模型变体")
     parser.add_argument("--anomalib-model", type=str, default="", help="Pipeline B: Anomalib 模型路径（.ckpt 或 .pt）")
     parser.add_argument("--classifier-model", type=str, default="", help="Pipeline B: YOLO 分类器模型路径")
 
@@ -29,6 +30,7 @@ def run_serve(args: argparse.Namespace) -> None:
         pipeline_type=args.pipeline,
         anomalib_model_path=getattr(args, "anomalib_model", ""),
         classifier_model_path=getattr(args, "classifier_model", ""),
+        rfdetr_model_variant=getattr(args, "variant", "s"),
     )
 
     uvicorn.run(app, host=args.host, port=args.port)
